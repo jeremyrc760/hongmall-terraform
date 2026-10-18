@@ -61,6 +61,7 @@ jobs:
           format: table
           hide-progress: true
 
+  
   aws-identity-check:
     name: Verify AWS OIDC Identity
     runs-on: ubuntu-latest
@@ -74,6 +75,22 @@ jobs:
       id-token: write
 
     steps:
+      - name: Inspect OIDC token claims
+        shell: bash
+        run: |
+          RESPONSE=$(curl --fail --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+
+          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
+
+          echo "$TOKEN" | jq -Rr 'split(".")[1] |
+            gsub("-"; "+") |
+            gsub("_"; "/") |
+            @base64d |
+            fromjson |
+            {iss, aud, sub, repository, event_name}'
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
@@ -81,6 +98,7 @@ jobs:
           aws-region: us-east-1
           role-session-name: hongmall-terraform-ci
           allowed-account-ids: "697196251337"
+          disable-retry: true
 
       - name: Verify assumed IAM role
         run: aws sts get-caller-identity
