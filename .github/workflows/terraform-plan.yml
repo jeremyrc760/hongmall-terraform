@@ -1,3 +1,4 @@
+
 name: Terraform Plan
 
 on:
@@ -7,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  inspect-oidc:
-    name: Inspect main OIDC identity
+  terraform-plan:
+    name: Terraform Plan
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
@@ -17,14 +18,25 @@ jobs:
       id-token: write
 
     steps:
-      - name: Inspect OIDC subject
-        shell: bash
-        run: |
-          response=$(curl -fsS \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          jwt=$(echo "$response" | jq -r '.value')
-          payload=$(echo "$jwt" | cut -d '.' -f 2)
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
 
-          echo "$payload" | base64 -d 2>/dev/null | jq '{iss, aud, sub}'
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::697196251337:role/HongMallTerraformPlanRole
+          aws-region: us-east-1
+          role-session-name: hongmall-terraform-plan
+          allowed-account-ids: "697196251337"
+          disable-retry: true
+
+      - name: Terraform Init
+        run: terraform init -input=false -lockfile=readonly
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -no-color
