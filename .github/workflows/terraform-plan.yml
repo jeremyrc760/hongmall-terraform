@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hongmall-terraform-cloudwatch
+  cancel-in-progress: false
+
 jobs:
   terraform-plan:
     name: Terraform Plan
@@ -39,4 +43,26 @@ jobs:
         run: terraform init -input=false -lockfile=readonly
 
       - name: Terraform Plan
-        run: terraform plan -input=false -no-color
+        run: terraform plan -input=false -no-color -out=change.tfplan
+
+      - name: Display Terraform Plan
+        run: |
+          terraform show -no-color change.tfplan \
+            > plan-summary.txt
+
+          cat plan-summary.txt
+
+          {
+            echo "## Terraform Plan"
+            echo '```text'
+            cat plan-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Terraform Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: change.tfplan
+          if-no-files-found: error
+          retention-days: 1
