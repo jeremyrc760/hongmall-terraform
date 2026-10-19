@@ -65,4 +65,4 @@ jobs:
           name: terraform-plan
           path: change.tfplan
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 3
