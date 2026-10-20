@@ -60,8 +60,7 @@ jobs:
               and .head_branch == "main"
               and .head_sha == $sha
               and .head_repository.full_name == $repo
-              and (.path |
-                endswith("/.github/workflows/terraform-plan.yml@refs/heads/main"))
+              and .path == ".github/workflows/terraform-plan.yml"
             ' plan-run.json > /dev/null || {
               echo "::error::Untrusted or mismatched Plan run"
               exit 1
