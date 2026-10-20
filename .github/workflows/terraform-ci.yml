@@ -8,7 +8,7 @@ on:
     paths:
       - "**/*.tf"
       - ".terraform.lock.hcl"
-      - ".github/workflows/terraform-ci.yml"
+      - ".github/workflows/**"
 
   workflow_dispatch:
 
@@ -61,3 +61,20 @@ jobs:
           format: table
           hide-progress: true
 
+  workflow-lint:
+    name: GitHub Actions Workflow Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install actionlint
+        shell: bash
+        run: |
+          bash <(curl -fsSL \
+            https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) \
+            1.7.12
+
+      - name: Run actionlint
+        run: ./actionlint -color
