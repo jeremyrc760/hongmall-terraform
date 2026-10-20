@@ -56,7 +56,7 @@ jobs:
             --arg repo "$GITHUB_REPOSITORY" '
               .status == "completed"
               and .conclusion == "success"
-              and .event == "workflow_dispatch"
+              and (.event == "push" or .event == "workflow_dispatch")
               and .head_branch == "main"
               and .head_sha == $sha
               and .head_repository.full_name == $repo
