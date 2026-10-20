@@ -2,6 +2,18 @@
 name: Terraform Plan
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars"
+      - "**/*.tfvars.json"
+      - ".terraform.lock.hcl"
+      - ".github/workflows/terraform-plan.yml"
+      - ".github/workflows/terraform-apply.yml"
+      - "policies/**"
+
   workflow_dispatch:
 
 permissions:
