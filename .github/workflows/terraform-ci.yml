@@ -74,3 +74,81 @@ jobs:
 
       - name: Run actionlint
         run: ./actionlint -color
+
+
+  terraform-pr-plan:
+    name: Terraform PR Plan
+    needs:
+      - terraform-checks
+      - workflow-lint
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Verify prerequisite CI checks
+        env:
+          FORMAT_RESULT: ${{ needs.terraform-checks.result }}
+          LINT_RESULT: ${{ needs.workflow-lint.result }}
+        run: |
+          if [[ "$FORMAT_RESULT" != "success" ||
+                "$LINT_RESULT" != "success" ]]; then
+            echo "::error::Prerequisite CI checks did not pass"
+            exit 1
+          fi
+
+      - name: Verify trusted PR
+        shell: bash
+        env:
+          SOURCE_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          TARGET_REPO: ${{ github.repository }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          RUN_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$SOURCE_REPO" != "$TARGET_REPO" ||
+                "$PR_AUTHOR_ID" != "202478535" ||
+                "$RUN_ACTOR_ID" != "202478535" ]]; then
+            echo "::error::Untrusted PR source"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::697196251337:role/HongMallTerraformPlanRole
+          aws-region: us-east-1
+          role-session-name: hongmall-terraform-pr-plan
+          allowed-account-ids: "697196251337"
+          disable-retry: true
+
+      - name: Terraform Init
+        run: terraform init -input=false -lockfile=readonly
+
+      - name: Terraform PR Plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan -input=false -no-color \
+            -out=pr-change.tfplan > /dev/null
+
+          terraform show -json pr-change.tfplan |
+            jq -r '
+              .resource_changes[]? |
+              select(.change.actions != ["no-op"]) |
+              "\(.address): \(.change.actions | join(","))"
+            '
+
+          echo "PR Plan completed successfully."
