@@ -128,7 +128,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
-          role-to-assume: arn:aws:iam::697196251337:role/HongMallTerraformPlanRole
+          role-to-assume: arn:aws:iam::697196251337:role/HongMallTerraformPRPlanRole
           aws-region: us-east-1
           role-session-name: hongmall-terraform-pr-plan
           allowed-account-ids: "697196251337"
@@ -137,18 +137,26 @@ jobs:
       - name: Terraform Init
         run: terraform init -input=false -lockfile=readonly
 
+      
       - name: Terraform PR Plan
         shell: bash
         run: |
           set -euo pipefail
-          terraform plan -input=false -no-color \
+
+          terraform plan \
+            -input=false \
+            -no-color \
             -out=pr-change.tfplan > /dev/null
 
           terraform show -json pr-change.tfplan |
             jq -r '
-              .resource_changes[]? |
-              select(.change.actions != ["no-op"]) |
-              "\(.address): \(.change.actions | join(","))"
-            '
+              [.resource_changes[]?.change.actions] as $a |
+              "## Terraform PR Plan\n\n" +
+              "| Action | Count |\n" +
+              "|---|---:|\n" +
+              "| Create | \($a | map(select(. == ["create"])) | length) |\n" +
+              "| Update | \($a | map(select(. == ["update"])) | length) |\n" +
+              "| Delete | \($a | map(select(. == ["delete"])) | length) |\n" +
+              "| Replace | \($a | map(select(index("delete") != null and index("create") != null)) | length) |"
+            ' >> "$GITHUB_STEP_SUMMARY"
 
-          echo "PR Plan completed successfully."
