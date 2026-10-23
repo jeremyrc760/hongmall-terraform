@@ -24,6 +24,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.15.8"
+          terraform_wrapper: false
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
@@ -124,6 +125,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.15.8"
+          terraform_wrapper: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
@@ -137,7 +139,6 @@ jobs:
       - name: Terraform Init
         run: terraform init -input=false -lockfile=readonly
 
-      
       - name: Terraform PR Plan
         shell: bash
         run: |
@@ -146,17 +147,27 @@ jobs:
           terraform plan \
             -input=false \
             -no-color \
+            -lock-timeout=5m \
             -out=pr-change.tfplan > /dev/null
 
           terraform show -json pr-change.tfplan |
-            jq -r '
-              [.resource_changes[]?.change.actions] as $a |
+            jq -er '
+              [.resource_changes[]? | .change? // {}] as $changes |
+              [$changes[] | (.actions // [])] as $actions |
               "## Terraform PR Plan\n\n" +
               "| Action | Count |\n" +
               "|---|---:|\n" +
-              "| Create | \($a | map(select(. == ["create"])) | length) |\n" +
-              "| Update | \($a | map(select(. == ["update"])) | length) |\n" +
-              "| Delete | \($a | map(select(. == ["delete"])) | length) |\n" +
-              "| Replace | \($a | map(select(index("delete") != null and index("create") != null)) | length) |"
+              "| Create | \($actions | map(select(. == ["create"])) | length) |\n" +
+              "| Update | \($actions | map(select(. == ["update"])) | length) |\n" +
+              "| Delete | \($actions | map(select(. == ["delete"])) | length) |\n" +
+              "| Replace | \($actions | map(select(index("delete") != null and index("create") != null)) | length) |\n" +
+              "| Import | \($changes | map(select(.importing != null)) | length) |"
             ' >> "$GITHUB_STEP_SUMMARY"
+      
+      - name: Cleanup temporary Plan
+        if: always()
+        shell: bash
+        run: |
+          rm -f pr-change.tfplan
+
 
