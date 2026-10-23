@@ -1,4 +1,3 @@
-
 name: Terraform Plan
 
 on:
@@ -33,6 +32,10 @@ jobs:
       contents: read
       id-token: write
 
+    env:
+      TF_IN_AUTOMATION: "true"
+      PLAN_BUCKET: hongmall-terraform-plans-697196251337
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,6 +44,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.15.8"
+          terraform_wrapper: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
@@ -55,26 +59,152 @@ jobs:
         run: terraform init -input=false -lockfile=readonly
 
       - name: Terraform Plan
-        run: terraform plan -input=false -no-color -out=change.tfplan
-
-      - name: Display Terraform Plan
+        id: plan
+        shell: bash
         run: |
-          terraform show -no-color change.tfplan \
-            > plan-summary.txt
+          set -uo pipefail
 
-          cat plan-summary.txt
+          terraform plan \
+            -input=false \
+            -no-color \
+            -lock-timeout=5m \
+            -detailed-exitcode \
+            -out=change.tfplan > /dev/null
+
+          exit_code=$?
+          case "$exit_code" in
+            0)
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              echo "## Terraform Main Plan: No changes" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            2)
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Terraform Plan failed (exit code $exit_code)"
+              exit "$exit_code"
+              ;;
+          esac
+
+      - name: Prepare private plan review and public summary
+        if: steps.plan.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform show -json change.tfplan |
+            jq -er '
+              [(.resource_changes // [])[] | .change // {}] as $changes |
+              [$changes[] | (.actions // [])] as $actions |
+              [(.output_changes // {})[] | (.change.actions // ["no-op"]) |
+                select(. != ["no-op"])] as $output_actions |
+              "## Terraform Main Plan\n\n" +
+              "| Action | Count |\n" +
+              "|---|---:|\n" +
+              "| Create | \($actions | map(select(. == ["create"])) | length) |\n" +
+              "| Update | \($actions | map(select(. == ["update"])) | length) |\n" +
+              "| Delete | \($actions | map(select(. == ["delete"])) | length) |\n" +
+              "| Replace | \($actions | map(select(index("delete") != null and index("create") != null)) | length) |\n" +
+              "| Import | \($changes | map(select(.importing != null)) | length) |\n" +
+              "| Output changes | \($output_actions | length) |"
+            ' >> "$GITHUB_STEP_SUMMARY"
+
+          # This file may include sensitive details; never print or publish it.
+          terraform show -no-color change.tfplan > plan-review.txt
+
+      - name: Upload private Main Plan and manifest
+        if: steps.plan.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s change.tfplan
+          test -s plan-review.txt
+
+          PLAN_PREFIX="main/${GITHUB_SHA}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}"
+          PLAN_KEY="${PLAN_PREFIX}/change.tfplan"
+          REVIEW_KEY="${PLAN_PREFIX}/plan-review.txt"
+          MANIFEST_KEY="${PLAN_PREFIX}/manifest.json"
+          PLAN_SHA256=$(sha256sum change.tfplan | awk '{print $1}')
+          REVIEW_SHA256=$(sha256sum plan-review.txt | awk '{print $1}')
+
+          # Unique key + conditional PUT. Never overwrite an existing current object.
+          PLAN_VERSION=$(aws s3api put-object \
+            --bucket "$PLAN_BUCKET" \
+            --key "$PLAN_KEY" \
+            --body change.tfplan \
+            --if-none-match '*' \
+            --query VersionId --output text)
+
+          [[ -n "$PLAN_VERSION" && "$PLAN_VERSION" != "None" && "$PLAN_VERSION" != "null" ]] || {
+            echo "::error::S3 Plan object Version ID is missing"
+            exit 1
+          }
+
+          REVIEW_VERSION=$(aws s3api put-object \
+            --bucket "$PLAN_BUCKET" \
+            --key "$REVIEW_KEY" \
+            --body plan-review.txt \
+            --if-none-match '*' \
+            --query VersionId --output text)
+
+          [[ -n "$REVIEW_VERSION" && "$REVIEW_VERSION" != "None" && "$REVIEW_VERSION" != "null" ]] || {
+            echo "::error::S3 review object Version ID is missing"
+            exit 1
+          }
+
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg bucket "$PLAN_BUCKET" \
+            --arg plan_key "$PLAN_KEY" \
+            --arg plan_version "$PLAN_VERSION" \
+            --arg plan_sha256 "$PLAN_SHA256" \
+            --arg review_key "$REVIEW_KEY" \
+            --arg review_version "$REVIEW_VERSION" \
+            --arg review_sha256 "$REVIEW_SHA256" '
+              {
+                repository: $repo,
+                branch: "main",
+                commit_sha: $sha,
+                workflow: ".github/workflows/terraform-plan.yml",
+                run_id: $run_id,
+                run_attempt: $run_attempt,
+                terraform_version: "1.15.8",
+                bucket: $bucket,
+                plan: {key: $plan_key, version_id: $plan_version, sha256: $plan_sha256},
+                review: {key: $review_key, version_id: $review_version, sha256: $review_sha256}
+              }
+            ' > manifest.json
+
+          MANIFEST_VERSION=$(aws s3api put-object \
+            --bucket "$PLAN_BUCKET" \
+            --key "$MANIFEST_KEY" \
+            --body manifest.json \
+            --if-none-match '*' \
+            --query VersionId --output text)
+
+          [[ -n "$MANIFEST_VERSION" && "$MANIFEST_VERSION" != "None" && "$MANIFEST_VERSION" != "null" ]] || {
+            echo "::error::S3 manifest object Version ID is missing"
+            exit 1
+          }
 
           {
-            echo "## Terraform Plan"
-            echo '```text'
-            cat plan-summary.txt
-            echo '```'
+            echo ""
+            echo "**Private S3 Plan uploaded.**"
+            echo ""
+            echo "- Plan Run ID: \`${GITHUB_RUN_ID}\`"
+            echo "- Run Attempt: \`${GITHUB_RUN_ATTEMPT}\`"
+            echo "- Commit SHA: \`${GITHUB_SHA}\`"
+            echo "- Plan SHA-256: \`${PLAN_SHA256}\`"
+            echo "- Manifest Key: \`${MANIFEST_KEY}\`"
+            echo "- Manifest Version ID: \`${MANIFEST_VERSION}\`"
+            echo "- Full plan: private S3 only; reviewer access required"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Terraform Plan Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan
-          path: change.tfplan
-          if-no-files-found: error
-          retention-days: 3
+      - name: Remove temporary plan files
+        if: always()
+        shell: bash
+        run: |
+          rm -f change.tfplan plan-review.txt manifest.json
