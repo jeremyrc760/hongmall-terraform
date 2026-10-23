@@ -1,11 +1,18 @@
-
 name: Terraform Apply
 
 on:
   workflow_dispatch:
     inputs:
       plan_run_id:
-        description: "Approved Terraform Plan Run ID"
+        description: "Reviewed Terraform Main Plan Run ID"
+        required: true
+        type: string
+      approved_plan_sha256:
+        description: "SHA-256 of the reviewed change.tfplan (64 lowercase hex chars)"
+        required: true
+        type: string
+      approved_manifest_version_id:
+        description: "Approved S3 Manifest Version ID"
         required: true
         type: string
 
@@ -19,9 +26,10 @@ concurrency:
 
 jobs:
   terraform-apply:
-    name: Apply Approved Terraform Plan
+    name: Apply Reviewed Terraform Main Plan
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
 
     permissions:
       contents: read
@@ -31,13 +39,16 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+      APPROVED_PLAN_SHA256: ${{ inputs.approved_plan_sha256 }}
+      APPROVED_MANIFEST_VERSION_ID: ${{ inputs.approved_manifest_version_id }}
+      PLAN_BUCKET: hongmall-terraform-plans-697196251337
       TF_IN_AUTOMATION: "true"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate Plan run
+      - name: Validate Terraform Plan run
         shell: bash
         run: |
           set -euo pipefail
@@ -46,10 +57,12 @@ jobs:
             echo "::error::Invalid Plan Run ID"
             exit 1
           }
+          [[ "$APPROVED_PLAN_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
+            echo "::error::Invalid reviewed Plan SHA-256"
+            exit 1
+          }
 
-          gh api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID" \
-            > plan-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID" > plan-run.json
 
           jq -e \
             --arg sha "$GITHUB_SHA" \
@@ -61,84 +74,28 @@ jobs:
               and .head_sha == $sha
               and .head_repository.full_name == $repo
               and .path == ".github/workflows/terraform-plan.yml"
+              and (.run_attempt | type == "number" and . >= 1)
             ' plan-run.json > /dev/null || {
-              echo "::error::Untrusted or mismatched Plan run"
+              echo "::error::Untrusted or mismatched Terraform Plan run"
               exit 1
             }
 
-          rm -f plan-run.json
-          echo "Plan run source verified."
-
-      - name: Download and verify Plan Artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          gh api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID/artifacts?per_page=100" \
-            > artifacts.json
-
-          jq -e '
-            [.artifacts[] |
-              select(.name == "terraform-plan"
-                and .expired == false)]
-            | length == 1
-          ' artifacts.json > /dev/null || {
-            echo "::error::Expected one unexpired Plan Artifact"
+          # Fail closed when the selected plan has become too old.
+          CREATED_AT=$(jq -er '.created_at' plan-run.json)
+          CREATED_EPOCH=$(date -u -d "$CREATED_AT" +%s)
+          NOW_EPOCH=$(date -u +%s)
+          (( NOW_EPOCH >= CREATED_EPOCH && NOW_EPOCH - CREATED_EPOCH <= 72 * 3600 )) || {
+            echo "::error::Plan is older than 72 hours; generate and review a new Plan"
             exit 1
           }
 
-          ARTIFACT_ID=$(jq -r '
-            .artifacts[] |
-            select(.name == "terraform-plan"
-              and .expired == false) |
-            .id
-          ' artifacts.json)
-
-          EXPECTED_DIGEST=$(jq -r \
-            --argjson id "$ARTIFACT_ID" '
-              .artifacts[] |
-              select(.id == $id) |
-              .digest
-            ' artifacts.json)
-
-          [[ "$EXPECTED_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || {
-            echo "::error::Missing or invalid Artifact digest"
-            exit 1
-          }
-
-          curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
-            -o terraform-plan.zip
-
-          ACTUAL_DIGEST="sha256:$(sha256sum terraform-plan.zip | awk '{print $1}')"
-
-          [[ "$ACTUAL_DIGEST" == "$EXPECTED_DIGEST" ]] || {
-            echo "::error::Artifact SHA-256 mismatch"
-            exit 1
-          }
-
-          # Allow exactly the expected file inside the archive.
-          [[ "$(unzip -Z -1 terraform-plan.zip)" == "change.tfplan" ]] || {
-            echo "::error::Unexpected Artifact contents"
-            exit 1
-          }
-
-          mkdir -p approved-plan
-          unzip -q terraform-plan.zip -d approved-plan
-
-          test -s approved-plan/change.tfplan
-
-          rm -f artifacts.json terraform-plan.zip
-
-          echo "Plan Artifact verified."
+          echo "Verified Plan run source, commit, and age."
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.15.8"
+          terraform_wrapper: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
@@ -149,54 +106,143 @@ jobs:
           allowed-account-ids: "697196251337"
           disable-retry: true
 
-      - name: Terraform Init
-        run: terraform init -input=false -lockfile=readonly
-
-      - name: Validate Terraform Plan
+      - name: Download and verify reviewed S3 Main Plan
         shell: bash
         run: |
           set -euo pipefail
 
-          trap 'rm -f plan.json' EXIT
+          RUN_ATTEMPT=$(jq -er '.run_attempt | tostring' plan-run.json)
+          PLAN_PREFIX="main/${GITHUB_SHA}/${PLAN_RUN_ID}/${RUN_ATTEMPT}"
+          PLAN_KEY="${PLAN_PREFIX}/change.tfplan"
+          REVIEW_KEY="${PLAN_PREFIX}/plan-review.txt"
+          MANIFEST_KEY="${PLAN_PREFIX}/manifest.json"
+
+          aws s3api get-object \
+            --bucket "$PLAN_BUCKET" \
+            --key "$MANIFEST_KEY" \
+            --version-id "$APPROVED_MANIFEST_VERSION_ID" \
+            manifest.json > /dev/null
+
+          jq -e \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$GITHUB_SHA" \
+            --arg run_id "$PLAN_RUN_ID" \
+            --arg run_attempt "$RUN_ATTEMPT" \
+            --arg bucket "$PLAN_BUCKET" \
+            --arg plan_key "$PLAN_KEY" \
+            --arg review_key "$REVIEW_KEY" \
+            --arg approved_sha "$APPROVED_PLAN_SHA256" '
+              .repository == $repo
+              and .branch == "main"
+              and .commit_sha == $sha
+              and .workflow == ".github/workflows/terraform-plan.yml"
+              and .run_id == $run_id
+              and .run_attempt == $run_attempt
+              and .terraform_version == "1.15.8"
+              and .bucket == $bucket
+              and .plan.key == $plan_key
+              and .plan.sha256 == $approved_sha
+              and (.plan.version_id | type == "string" and length > 0 and . != "null")
+              and .review.key == $review_key
+              and (.review.version_id | type == "string" and length > 0 and . != "null")
+              and (.review.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+            ' manifest.json > /dev/null || {
+              echo "::error::S3 Plan manifest does not match the approved plan"
+              exit 1
+            }
+
+          PLAN_VERSION=$(jq -er '.plan.version_id' manifest.json)
+          mkdir -p approved-plan
+          aws s3api get-object \
+            --bucket "$PLAN_BUCKET" \
+            --key "$PLAN_KEY" \
+            --version-id "$PLAN_VERSION" \
+            approved-plan/change.tfplan > /dev/null
+
+          test -s approved-plan/change.tfplan
+          ACTUAL_SHA256=$(sha256sum approved-plan/change.tfplan | awk '{print $1}')
+          [[ "$ACTUAL_SHA256" == "$APPROVED_PLAN_SHA256" ]] || {
+            echo "::error::Downloaded Terraform Plan SHA-256 mismatch"
+            exit 1
+          }
+
+          echo "Reviewed Plan provenance, S3 object version, and hash verified."
+
+      - name: Terraform Init
+        run: terraform init -input=false -lockfile=readonly
+
+      - name: Validate Terraform Plan
+        id: validation
+        shell: bash
+        run: |
+          set -euo pipefail
 
           terraform show -json approved-plan/change.tfplan > plan.json
 
-          # Require at least one planned resource change.
-          jq -e '
-            [.resource_changes[]? |
-              select(.change.actions != ["no-op"])]
-            | length > 0
-          ' plan.json > /dev/null || {
-            echo "::error::Plan contains no resource changes"
-            exit 1
-          }
-
-          # Default protection: reject deletion and replacement.
+          # Reject deletes and replacements, regardless of action order.
           jq -e '
             all(.resource_changes[]?;
-              (.change.actions |
-                index("delete") | not)
+              ((.change.actions // []) | index("delete") | not)
             )
           ' plan.json > /dev/null || {
-            echo "::error::Destructive changes require a separate approved policy"
+            echo "::error::Deletes and replacements are not permitted in this phase"
             exit 1
           }
 
-          # Reject configuration/output-only changes
-          # that are not covered by the current review policy.
+          # Only actual output changes are blocked; ignore no-op outputs.
           jq -e '
-            ((.output_changes // {}) | length == 0)
+            all((.output_changes // {})[];
+              ((.change.actions // ["no-op"]) == ["no-op"])
+            )
           ' plan.json > /dev/null || {
-            echo "::error::Output changes require separate review"
+            echo "::error::Actual Terraform output changes require separate review"
             exit 1
           }
 
-          echo "Terraform Plan policy checks passed."
+          # Import-only changes are valid. A truly empty plan is skipped.
+          HAS_CHANGES=$(jq -r '
+            [(.resource_changes // [])[] |
+              select(
+                (.change.importing != null) or
+                ((.change.actions // ["no-op"]) != ["no-op"])
+              )
+            ]
+            | length > 0
+          ' plan.json)
 
-      - name: Terraform Apply
+          if [[ "$HAS_CHANGES" == "true" ]]; then
+             echo "should_apply=true" >> "$GITHUB_OUTPUT"
+           elif [[ "$HAS_CHANGES" == "false" ]]; then
+             echo "should_apply=false" >> "$GITHUB_OUTPUT"
+             echo "Terraform Plan contains no actionable resource changes; skipping Apply."
+           else
+             echo "::error::Unexpected Plan validation result"
+             exit 1
+           fi
+
+      - name: Verify main has not advanced
+        if: steps.validation.outputs.should_apply == 'true'
         shell: bash
         run: |
+          set -euo pipefail
+          CURRENT_MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$CURRENT_MAIN_SHA" == "$GITHUB_SHA" ]] || {
+            echo "::error::main advanced since this approved Plan; generate and review a new Plan"
+            exit 1
+          }
+
+      - name: Terraform Apply
+        if: steps.validation.outputs.should_apply == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
           terraform apply \
             -input=false \
             -no-color \
             approved-plan/change.tfplan
+
+      - name: Remove temporary plan and metadata files
+        if: always()
+        shell: bash
+        run: |
+          rm -f manifest.json plan-run.json plan.json approved-plan/change.tfplan
