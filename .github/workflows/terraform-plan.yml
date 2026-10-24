@@ -62,16 +62,19 @@ jobs:
         id: plan
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
-          terraform plan \
+          if terraform plan \
             -input=false \
             -no-color \
             -lock-timeout=5m \
             -detailed-exitcode \
-            -out=change.tfplan > /dev/null
+            -out=change.tfplan > /dev/null; then
+            exit_code=0
+          else
+            exit_code=$?
+          fi
 
-          exit_code=$?
           case "$exit_code" in
             0)
               echo "has_changes=false" >> "$GITHUB_OUTPUT"
