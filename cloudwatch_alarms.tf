@@ -50,3 +50,27 @@ resource "aws_cloudwatch_metric_alarm" "lab_ec2_status_check" {
     Project     = "hongmall"
   }
 }
+
+# Smoke test alarm for Terraform CI/CD pipeline
+resource "aws_cloudwatch_metric_alarm" "pipeline_smoke_test" {
+  alarm_name        = "hongmall-tf-lab-pipeline-smoke-test"
+  alarm_description = "Safe test alarm for Terraform CI/CD."
+
+  namespace   = "HongMall/TerraformLab"
+  metric_name = "PipelineSmokeTest"
+  statistic   = "Average"
+  period      = 300
+
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 100
+  evaluation_periods  = 1
+
+  treat_missing_data = "notBreaching"
+  actions_enabled    = false
+
+  tags = {
+    Environment = "lab"
+    ManagedBy   = "terraform"
+    Project     = "hongmall"
+  }
+}
