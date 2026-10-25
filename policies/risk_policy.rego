@@ -3,17 +3,24 @@ package terraform.risk
 
 import rego.v1
 
-# Extract actual resource changes from Terraform Plan
+
+# Ignore no-op resources unless they are imports
+ignore_noop(rc) if {
+    rc.change.actions == ["no-op"]
+    object.get(rc.change, "importing", null) == null
+}
+
 resource_changes := [
     {
         "address": rc.address,
         "actions": rc.change.actions,
         "before": rc.change.before,
         "after": rc.change.after,
+        "importing": object.get(rc.change, "importing", null),
     }
     |
     some rc in input.resource_changes
-    rc.change.actions != ["no-op"]
+    not ignore_noop(rc)
 ]
 
 # Attach resource criticality to each change
@@ -47,6 +54,13 @@ change_severity[address] := "high" if {
     some address in delete_changes
 }
 
+# Import without infrastructure configuration changes
+change_severity[address] := "low" if {
+    some rc in resource_changes
+    rc.actions == ["no-op"]
+    rc.importing != null
+    address := rc.address
+}
 
 # Resources requiring classification
 unknown_resources contains msg if {

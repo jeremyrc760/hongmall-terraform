@@ -90,6 +90,37 @@ jobs:
           }
 
           echo "Verified Plan run source, commit, and age."
+      
+      - name: Verify Main Plan passed OPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUN_ATTEMPT=$(jq -er '.run_attempt' plan-run.json)
+
+          OPA_PASSED=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '
+              [
+                .jobs[]
+                | select(
+                    .name == "Terraform Plan"
+                    and .conclusion == "success"
+                  )
+                | .steps[]
+                | select(
+                    .name == "OPA Policy Gate"
+                    and .conclusion == "success"
+                  )
+              ] | length > 0
+            ')
+
+          if [[ "$OPA_PASSED" != "true" ]]; then
+            echo "::error::Main Plan did not pass OPA Policy Gate"
+            exit 1
+          fi
+
+          echo "Main Plan OPA verification passed."
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
