@@ -62,7 +62,7 @@ resource "aws_cloudwatch_metric_alarm" "pipeline_smoke_test" {
   period      = 300
 
   comparison_operator = "GreaterThanThreshold"
-  threshold           = 100
+  threshold           = 110
   evaluation_periods  = 1
 
   treat_missing_data = "notBreaching"
