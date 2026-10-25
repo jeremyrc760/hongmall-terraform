@@ -196,7 +196,7 @@ jobs:
           opa eval \
             --data policies/risk_policy.rego \
             --data policies/resource_classification.json \
-            --input plan.json \
+            --input policies/test_s3_public.json \
             --format pretty \
             --fail \
             'data.terraform.risk.policy_pass == true'
