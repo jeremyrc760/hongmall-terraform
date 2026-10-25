@@ -1,0 +1,16 @@
+
+{
+  "resource_changes": [
+    {
+      "address": "aws_cloudwatch_metric_alarm.pipeline_smoke_test",
+      "type": "aws_cloudwatch_metric_alarm",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "alarm_name": "hongmall-tf-lab-pipeline-smoke-test"
+        },
+        "after": null
+      }
+    }
+  ]
+}

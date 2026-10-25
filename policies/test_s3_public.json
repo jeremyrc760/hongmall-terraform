@@ -1,0 +1,24 @@
+
+{
+  "resource_changes": [
+    {
+      "address": "aws_s3_bucket_public_access_block.test",
+      "type": "aws_s3_bucket_public_access_block",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "block_public_acls": true,
+          "ignore_public_acls": true,
+          "block_public_policy": true,
+          "restrict_public_buckets": true
+        },
+        "after": {
+          "block_public_acls": true,
+          "ignore_public_acls": true,
+          "block_public_policy": false,
+          "restrict_public_buckets": true
+        }
+      }
+    }
+  ]
+}
