@@ -194,7 +194,7 @@ jobs:
           decision="$(opa eval \
             --data policies/risk_policy.rego \
             --data policies/resource_classification.json \
-            --input policies/test_s3_public.json \
+            --input plan.json \
             --format raw \
             'data.terraform.risk.policy_pass')"
 
