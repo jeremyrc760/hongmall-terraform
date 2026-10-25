@@ -178,27 +178,33 @@ jobs:
 
           opa version
 
+      
       - name: OPA Policy Gate
         shell: bash
         run: |
           set -euo pipefail
 
-          # Remove sensitive local Plan files on exit
           trap 'rm -f plan.json pr-change.tfplan' EXIT
 
-          # Convert the saved Terraform Plan to JSON
           terraform show -json pr-change.tfplan > plan.json
 
-          # Validate Rego policy syntax
           opa check --strict policies/risk_policy.rego
 
-          # Evaluate the unified Policy Gate
-          opa eval \
+          # Evaluate OPA decision
+          decision="$(opa eval \
             --data policies/risk_policy.rego \
             --data policies/resource_classification.json \
             --input policies/test_s3_public.json \
-            --format pretty \
-            --fail \
-            'data.terraform.risk.policy_pass == true'
+            --format raw \
+            'data.terraform.risk.policy_pass')"
+
+          echo "OPA Policy Decision: $decision"
+
+          # Explicitly reject anything other than true
+          if [[ "$decision" != "true" ]]; then
+            echo "::error::OPA Policy Gate rejected the change"
+            exit 1
+          fi
 
           echo "OPA Policy Gate passed." >> "$GITHUB_STEP_SUMMARY"
+
