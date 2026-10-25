@@ -1,0 +1,16 @@
+
+{
+  "resource_changes": [
+    {
+      "address": "aws_iam_role.unknown_role",
+      "type": "aws_iam_role",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "unknown-test-role"
+        }
+      }
+    }
+  ]
+}

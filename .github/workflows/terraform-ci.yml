@@ -75,7 +75,6 @@ jobs:
       - name: Run actionlint
         run: ./actionlint -color
 
-
   terraform-pr-plan:
     name: Terraform PR Plan
     needs:
@@ -137,7 +136,6 @@ jobs:
       - name: Terraform Init
         run: terraform init -input=false -lockfile=readonly
 
-      
       - name: Terraform PR Plan
         shell: bash
         run: |
@@ -160,3 +158,47 @@ jobs:
               "| Replace | \($a | map(select(index("delete") != null and index("create") != null)) | length) |"
             ' >> "$GITHUB_STEP_SUMMARY"
 
+      # ----------------------------------------
+      # OPA Policy as Code
+      # ----------------------------------------
+
+      - name: Install OPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OPA_VERSION="1.21.4"
+
+          curl -fsSL --retry 3 \
+            "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64_static" \
+            -o /tmp/opa
+
+          sudo install -m 0755 /tmp/opa /usr/local/bin/opa
+          rm -f /tmp/opa
+
+          opa version
+
+      - name: OPA Policy Gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Remove sensitive local Plan files on exit
+          trap 'rm -f plan.json pr-change.tfplan' EXIT
+
+          # Convert the saved Terraform Plan to JSON
+          terraform show -json pr-change.tfplan > plan.json
+
+          # Validate Rego policy syntax
+          opa check --strict policies/risk_policy.rego
+
+          # Evaluate the unified Policy Gate
+          opa eval \
+            --data policies/risk_policy.rego \
+            --data policies/resource_classification.json \
+            --input plan.json \
+            --format pretty \
+            --fail \
+            'data.terraform.risk.policy_pass == true'
+
+          echo "OPA Policy Gate passed." >> "$GITHUB_STEP_SUMMARY"

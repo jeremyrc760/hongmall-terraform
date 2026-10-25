@@ -1,0 +1,18 @@
+
+{
+  "resource_changes": [
+    {
+      "address": "aws_cloudwatch_metric_alarm.sandbox_ec2_cpu",
+      "type": "aws_cloudwatch_metric_alarm",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "actions_enabled": true
+        },
+        "after": {
+          "actions_enabled": false
+        }
+      }
+    }
+  ]
+}
