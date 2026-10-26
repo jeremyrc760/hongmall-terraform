@@ -1,3 +1,4 @@
+
 name: Terraform Apply
 
 on:
@@ -15,6 +16,14 @@ on:
         description: "Approved S3 Manifest Version ID"
         required: true
         type: string
+      approved_risk_level:
+        description: "Reviewed OPA Overall Risk (must match the S3 Manifest)"
+        required: true
+        type: choice
+        options:
+          - low
+          - medium
+          - high
 
 permissions:
   contents: read
@@ -25,9 +34,70 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Extra approval is required only for Medium risk.
+  # Configure required reviewers in the production-medium Environment.
+  medium-risk-approval:
+    name: Medium Risk Approval
+    if: github.ref == 'refs/heads/main' && inputs.approved_risk_level == 'medium'
+    runs-on: ubuntu-latest
+    environment: production-medium
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm Medium approval protection is configured
+        env:
+          APPROVAL_CONFIGURED: ${{ vars.RISK_APPROVAL_CONFIGURED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$APPROVAL_CONFIGURED" == "true" ]] || {
+            echo "::error::production-medium approval protection has not been enabled"
+            exit 1
+          }
+          echo "Medium-risk approval gate completed."
+
+  # High risk uses a separate reviewer group / Environment.
+  high-risk-approval:
+    name: High Risk Approval
+    if: github.ref == 'refs/heads/main' && inputs.approved_risk_level == 'high'
+    runs-on: ubuntu-latest
+    environment: production-high
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm High approval protection is configured
+        env:
+          APPROVAL_CONFIGURED: ${{ vars.RISK_APPROVAL_CONFIGURED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$APPROVAL_CONFIGURED" == "true" ]] || {
+            echo "::error::production-high approval protection has not been enabled"
+            exit 1
+          }
+          echo "High-risk approval gate completed."
+
   terraform-apply:
     name: Apply Reviewed Terraform Main Plan
-    if: github.ref == 'refs/heads/main'
+    needs:
+      - medium-risk-approval
+      - high-risk-approval
+    if: >-
+      ${{
+        always() &&
+        github.ref == 'refs/heads/main' &&
+        (
+          (inputs.approved_risk_level == 'low' &&
+           needs.medium-risk-approval.result == 'skipped' &&
+           needs.high-risk-approval.result == 'skipped') ||
+          (inputs.approved_risk_level == 'medium' &&
+           needs.medium-risk-approval.result == 'success' &&
+           needs.high-risk-approval.result == 'skipped') ||
+          (inputs.approved_risk_level == 'high' &&
+           needs.high-risk-approval.result == 'success' &&
+           needs.medium-risk-approval.result == 'skipped')
+        )
+      }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -41,6 +111,7 @@ jobs:
       PLAN_RUN_ID: ${{ inputs.plan_run_id }}
       APPROVED_PLAN_SHA256: ${{ inputs.approved_plan_sha256 }}
       APPROVED_MANIFEST_VERSION_ID: ${{ inputs.approved_manifest_version_id }}
+      APPROVED_RISK_LEVEL: ${{ inputs.approved_risk_level }}
       PLAN_BUCKET: hongmall-terraform-plans-697196251337
       TF_IN_AUTOMATION: "true"
 
@@ -59,6 +130,10 @@ jobs:
           }
           [[ "$APPROVED_PLAN_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
             echo "::error::Invalid reviewed Plan SHA-256"
+            exit 1
+          }
+          [[ "$APPROVED_RISK_LEVEL" =~ ^(low|medium|high)$ ]] || {
+            echo "::error::Invalid approved risk level"
             exit 1
           }
 
@@ -80,7 +155,7 @@ jobs:
               exit 1
             }
 
-          # Fail closed when the selected plan has become too old.
+          # Fail closed when the selected Plan has become too old.
           CREATED_AT=$(jq -er '.created_at' plan-run.json)
           CREATED_EPOCH=$(date -u -d "$CREATED_AT" +%s)
           NOW_EPOCH=$(date -u +%s)
@@ -90,7 +165,7 @@ jobs:
           }
 
           echo "Verified Plan run source, commit, and age."
-      
+
       - name: Verify Main Plan passed OPA
         shell: bash
         run: |
@@ -154,6 +229,7 @@ jobs:
             --version-id "$APPROVED_MANIFEST_VERSION_ID" \
             manifest.json > /dev/null
 
+          # Check the risk routing input against the immutable Plan metadata.
           jq -e \
             --arg repo "$GITHUB_REPOSITORY" \
             --arg sha "$GITHUB_SHA" \
@@ -162,7 +238,8 @@ jobs:
             --arg bucket "$PLAN_BUCKET" \
             --arg plan_key "$PLAN_KEY" \
             --arg review_key "$REVIEW_KEY" \
-            --arg approved_sha "$APPROVED_PLAN_SHA256" '
+            --arg approved_sha "$APPROVED_PLAN_SHA256" \
+            --arg approved_risk "$APPROVED_RISK_LEVEL" '
               .repository == $repo
               and .branch == "main"
               and .commit_sha == $sha
@@ -171,6 +248,8 @@ jobs:
               and .run_attempt == $run_attempt
               and .terraform_version == "1.15.8"
               and .bucket == $bucket
+              and (.risk_level == $approved_risk)
+              and (.risk_level == "low" or .risk_level == "medium" or .risk_level == "high")
               and .plan.key == $plan_key
               and .plan.sha256 == $approved_sha
               and (.plan.version_id | type == "string" and length > 0 and . != "null")
@@ -178,7 +257,7 @@ jobs:
               and (.review.version_id | type == "string" and length > 0 and . != "null")
               and (.review.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
             ' manifest.json > /dev/null || {
-              echo "::error::S3 Plan manifest does not match the approved plan"
+              echo "::error::S3 Plan manifest does not match the approved risk and Plan"
               exit 1
             }
 
@@ -197,12 +276,24 @@ jobs:
             exit 1
           }
 
-          echo "Reviewed Plan provenance, S3 object version, and hash verified."
+          echo "Reviewed Plan provenance, risk level, S3 object version, and hash verified."
 
       - name: Terraform Init
         run: terraform init -input=false -lockfile=readonly
 
-      - name: Validate Terraform Plan
+      - name: Install OPA for Apply verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          OPA_VERSION="1.21.4"
+          curl -fsSL --retry 3 \
+            "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64_static" \
+            -o /tmp/opa
+          sudo install -m 0755 /tmp/opa /usr/local/bin/opa
+          rm -f /tmp/opa
+          opa version
+
+      - name: Validate Terraform Plan and risk
         id: validation
         shell: bash
         run: |
@@ -210,7 +301,34 @@ jobs:
 
           terraform show -json approved-plan/change.tfplan > plan.json
 
-          # Reject deletes and replacements, regardless of action order.
+          # Recompute risk from the exact approved Plan and checked-out policy.
+          opa check --strict policies/risk_policy.rego
+          POLICY_PASS=$(opa eval \
+            --data policies/risk_policy.rego \
+            --data policies/resource_classification.json \
+            --input plan.json \
+            --format raw \
+            'data.terraform.risk.policy_pass')
+          [[ "$POLICY_PASS" == "true" ]] || {
+            echo "::error::Approved Plan fails OPA re-evaluation"
+            exit 1
+          }
+
+          CALCULATED_RISK=$(opa eval \
+            --data policies/risk_policy.rego \
+            --data policies/resource_classification.json \
+            --input plan.json \
+            --format raw \
+            'data.terraform.risk.overall_risk')
+          MANIFEST_RISK=$(jq -er '.risk_level' manifest.json)
+          [[ "$CALCULATED_RISK" == "$MANIFEST_RISK" &&
+             "$CALCULATED_RISK" == "$APPROVED_RISK_LEVEL" ]] || {
+            echo "::error::OPA risk does not match approved risk and Manifest"
+            exit 1
+          }
+          echo "Verified OPA Overall Risk: $CALCULATED_RISK"
+
+          # Preserve existing restriction: no deletes or replacements.
           jq -e '
             all(.resource_changes[]?;
               ((.change.actions // []) | index("delete") | not)
@@ -220,7 +338,7 @@ jobs:
             exit 1
           }
 
-          # Only actual output changes are blocked; ignore no-op outputs.
+          # Reject actual output changes; ignore no-op outputs.
           jq -e '
             all((.output_changes // {})[];
               ((.change.actions // ["no-op"]) == ["no-op"])
@@ -230,7 +348,7 @@ jobs:
             exit 1
           }
 
-          # Import-only changes are valid. A truly empty plan is skipped.
+          # Import-only changes are valid. A truly empty Plan is skipped.
           HAS_CHANGES=$(jq -r '
             [(.resource_changes // [])[] |
               select(
@@ -242,14 +360,14 @@ jobs:
           ' plan.json)
 
           if [[ "$HAS_CHANGES" == "true" ]]; then
-             echo "should_apply=true" >> "$GITHUB_OUTPUT"
-           elif [[ "$HAS_CHANGES" == "false" ]]; then
-             echo "should_apply=false" >> "$GITHUB_OUTPUT"
-             echo "Terraform Plan contains no actionable resource changes; skipping Apply."
-           else
-             echo "::error::Unexpected Plan validation result"
-             exit 1
-           fi
+            echo "should_apply=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$HAS_CHANGES" == "false" ]]; then
+            echo "should_apply=false" >> "$GITHUB_OUTPUT"
+            echo "Terraform Plan contains no actionable resource changes; skipping Apply."
+          else
+            echo "::error::Unexpected Plan validation result"
+            exit 1
+          fi
 
       - name: Verify main has not advanced
         if: steps.validation.outputs.should_apply == 'true'
