@@ -138,6 +138,7 @@ jobs:
           opa version
 
       - name: OPA Policy Gate
+        id: opa
         if: steps.plan.outputs.has_changes == 'true'
         shell: bash
         run: |
@@ -165,11 +166,32 @@ jobs:
             exit 1
           fi
 
+          # Calculate overall risk for the entire Plan
+          PLAN_RISK="$(opa eval \
+            --data policies/risk_policy.rego \
+            --data policies/resource_classification.json \
+            --input plan.json \
+            --format raw \
+            'data.terraform.risk.overall_risk')"
+
+          # Only assessed risk levels are accepted
+          case "$PLAN_RISK" in
+            low|medium|high)
+              echo "risk_level=$PLAN_RISK" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Invalid or blocked OPA risk level: $PLAN_RISK"
+              exit 1
+              ;;
+          esac
+
           {
             echo ""
             echo "## OPA Policy Gate"
             echo ""
             echo "Policy evaluation: Passed"
+            echo ""
+            echo "Overall Risk: \`${PLAN_RISK}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------
@@ -180,8 +202,17 @@ jobs:
       - name: Upload private Main Plan and manifest
         if: steps.plan.outputs.has_changes == 'true'
         shell: bash
+        env:
+          PLAN_RISK: ${{ steps.opa.outputs.risk_level }}
         run: |
           set -euo pipefail
+
+          # Require a valid OPA risk classification
+          [[ "$PLAN_RISK" =~ ^(low|medium|high)$ ]] || {
+            echo "::error::Missing or invalid Plan risk level"
+            exit 1
+          }
+
           test -s change.tfplan
           test -s plan-review.txt
 
@@ -217,12 +248,14 @@ jobs:
             exit 1
           }
 
+          # Manifest binds risk level to this exact Plan
           jq -n \
             --arg repo "$GITHUB_REPOSITORY" \
             --arg sha "$GITHUB_SHA" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg bucket "$PLAN_BUCKET" \
+            --arg risk "$PLAN_RISK" \
             --arg plan_key "$PLAN_KEY" \
             --arg plan_version "$PLAN_VERSION" \
             --arg plan_sha256 "$PLAN_SHA256" \
@@ -238,6 +271,7 @@ jobs:
                 run_attempt: $run_attempt,
                 terraform_version: "1.15.8",
                 bucket: $bucket,
+                risk_level: $risk,
                 plan: {
                   key: $plan_key,
                   version_id: $plan_version,
@@ -267,6 +301,7 @@ jobs:
             echo ""
             echo "**Private S3 Plan uploaded.**"
             echo ""
+            echo "- Overall Risk: \`${PLAN_RISK}\`"
             echo "- Plan Run ID: \`${GITHUB_RUN_ID}\`"
             echo "- Run Attempt: \`${GITHUB_RUN_ATTEMPT}\`"
             echo "- Commit SHA: \`${GITHUB_SHA}\`"

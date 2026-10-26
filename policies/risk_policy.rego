@@ -174,3 +174,30 @@ policy_pass if {
     count(deny) == 0
     count(unassessed_changes) == 0
 }
+
+# Overall Plan Risk
+# Block if policy checks fail or changes are not assessed
+
+default overall_risk := "blocked"
+
+risk_rank := {
+    "low": 1,
+    "medium": 2,
+    "high": 3
+}
+
+# Calculate highest risk across assessed resources
+overall_risk := level if {
+    policy_pass
+    count(final_risk) > 0
+
+    scores := [
+        risk_rank[risk] |
+        some _, risk in final_risk
+    ]
+
+    highest := max(scores)
+
+    some level, score in risk_rank
+    score == highest
+}
