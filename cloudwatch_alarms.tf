@@ -74,3 +74,21 @@ resource "aws_cloudwatch_metric_alarm" "pipeline_smoke_test" {
     Project     = "hongmall"
   }
 }
+
+# Existing CloudWatch Alarm — Brownfield Import Demo
+resource "aws_cloudwatch_metric_alarm" "import_demo" {
+  alarm_name        = "hongmall-tf-lab-import-demo"
+  alarm_description = "Existing CloudWatch alarm for HongMall Terraform brownfield import demonstration"
+
+  namespace   = "HongMall/TerraformLab"
+  metric_name = "ImportDemo"
+  statistic   = "Average"
+  period      = 300
+
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 100
+  evaluation_periods  = 1
+
+  treat_missing_data = "notBreaching"
+  actions_enabled    = false
+}
