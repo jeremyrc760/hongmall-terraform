@@ -92,3 +92,21 @@ resource "aws_cloudwatch_metric_alarm" "import_demo" {
   treat_missing_data = "notBreaching"
   actions_enabled    = false
 }
+# Case Study 02 — Existing medium-criticality lab alarm
+resource "aws_cloudwatch_metric_alarm" "service_cpu_medium" {
+  alarm_name        = "hongmall-tf-lab-service-cpu-medium"
+  alarm_description = "HongMall controlled lab: simulated medium-criticality internal service CPU monitoring"
+
+  namespace   = "HongMall/TerraformLab"
+  metric_name = "CPUUtilization"
+  statistic   = "Average"
+  period      = 300
+
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+
+  threshold           = 80
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  actions_enabled     = false
+}

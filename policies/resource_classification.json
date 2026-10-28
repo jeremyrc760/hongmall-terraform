@@ -3,6 +3,7 @@
     "aws_cloudwatch_metric_alarm.sandbox_ec2_cpu": "low",
     "aws_cloudwatch_metric_alarm.lab_ec2_status_check": "low",
     "aws_cloudwatch_metric_alarm.pipeline_smoke_test": "low",
-    "aws_cloudwatch_metric_alarm.import_demo": "low"
+    "aws_cloudwatch_metric_alarm.import_demo": "low",
+    "aws_cloudwatch_metric_alarm.service_cpu_medium": "medium"
   }
 }
