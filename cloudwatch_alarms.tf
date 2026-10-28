@@ -121,7 +121,7 @@ resource "aws_cloudwatch_metric_alarm" "critical_monitor_delete" {
   period      = 300
 
   evaluation_periods  = 1
-  threshold           = 0
+  threshold           = 1
   comparison_operator = "LessThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   actions_enabled     = false
