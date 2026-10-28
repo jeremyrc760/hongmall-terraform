@@ -110,3 +110,19 @@ resource "aws_cloudwatch_metric_alarm" "service_cpu_medium" {
   treat_missing_data  = "notBreaching"
   actions_enabled     = false
 }
+# Case Study 03 — High-criticality monitoring deletion simulation
+resource "aws_cloudwatch_metric_alarm" "critical_monitor_delete" {
+  alarm_name        = "hongmall-tf-lab-critical-monitor-delete"
+  alarm_description = "Controlled lab simulation for high-risk monitoring deletion"
+
+  namespace   = "HongMall/TerraformLab"
+  metric_name = "CriticalServiceHeartbeat"
+  statistic   = "Sum"
+  period      = 300
+
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "LessThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  actions_enabled     = false
+}

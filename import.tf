@@ -13,3 +13,8 @@ import {
   to = aws_cloudwatch_metric_alarm.service_cpu_medium
   id = "hongmall-tf-lab-service-cpu-medium"
 }
+# Case Study 03 — Brownfield adoption
+import {
+  to = aws_cloudwatch_metric_alarm.critical_monitor_delete
+  id = "hongmall-tf-lab-critical-monitor-delete"
+}
